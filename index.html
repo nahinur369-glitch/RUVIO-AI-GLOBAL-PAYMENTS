@@ -349,7 +349,8 @@ const SAMPLE_FX_RATES_TO_USD = {
   BDT: 119.5,
   GBP: 0.79,
   CAD: 1.38,
-  SGD: 1.34
+  SGD: 1.34,
+  JPY: 154.2
 };
 const CURRENCY_SYMBOLS = {
   USD: '$',
@@ -357,7 +358,8 @@ const CURRENCY_SYMBOLS = {
   BDT: '৳',
   GBP: '£',
   CAD: 'C$',
-  SGD: 'S$'
+  SGD: 'S$',
+  JPY: '¥'
 };
 const INITIAL_WALLETS = [{
   id: 'wal-bdt-bkash',
@@ -746,7 +748,7 @@ function evaluateBridgeRoute(source, destination) {
     return {
       supported: false,
       routeCode: 'SAME_WALLET',
-      modeLabel: 'UNAVAILABLE ROUTE',
+      modeLabel: 'SANDBOX EXPERIENCE',
       simBadge: 'INVALID SELECTION',
       railName: 'Identical Sender & Receiver Wallet',
       noticeTitle: 'Invalid Selection: Same Sender & Receiver Wallet',
@@ -833,7 +835,7 @@ function evaluateBridgeRoute(source, destination) {
     simBadge: `${srcBadge} → ${dstBadge}`,
     railName: isCrossCurrency ? `Cross-Currency Demo Route: ${source.name} (${source.currency}) → ${destination.name} (${destination.currency})` : `${source.currency} Demo Route: ${source.name} → ${destination.name}`,
     noticeTitle: `DEMO TRANSFER AVAILABLE: ${source.name} → ${destination.name}`,
-    noticeMessage: isCrossCurrency ? `Simulated cross-currency transfer using demo rate 1 ${source.currency} = ${sampleRate.toFixed(4)} ${destination.currency}. DEMO MODE — NO REAL MONEY TRANSFERRED.` : `Simulated ${source.currency} transfer via internal demo ledger. DEMO MODE — NO REAL MONEY TRANSFERRED.`,
+    noticeMessage: isCrossCurrency ? `Simulated cross-currency transfer using demo rate 1 ${source.currency} = ${sampleRate.toFixed(4)} ${destination.currency}. SANDBOX EXPERIENCE — Simulated transaction; does not transfer real money.` : `Simulated ${source.currency} transfer via internal demo ledger. SANDBOX EXPERIENCE — Simulated transaction; does not transfer real money.`,
     estimatedArrival: 'Instant (Internal Demo Ledger)',
     feePercent: isCrossCurrency ? 0.75 : 0.35,
     fixedFeeInSource: 0,
@@ -2258,7 +2260,7 @@ function App() {
   useEffect(() => {
     try {
       if (typeof document !== 'undefined') {
-        document.title = 'RUVIO — Your Money. Your World.';
+        document.title = 'RUVIO AI — GLOBAL PAYMENTS | Your Money. Your World.';
         const encodedSvg = encodeURIComponent(RUVIO_FAVICON_SVG);
         let link = document.querySelector("link[rel~='icon']");
         if (!link && document.head) {
@@ -2697,6 +2699,8 @@ function App() {
   });
   const [ppOrderAmount, setPpOrderAmount] = useState('125.00');
   const [ppOrderDesc, setPpOrderDesc] = useState('PayPal Sandbox Orders v2 Checkout');
+  const [ppRequireLiveApi, setPpRequireLiveApi] = useState(false);
+  const [ppApiError, setPpApiError] = useState('');
   const ppLockRef = useRef(new Set());
   useEffect(() => {
     try {
@@ -2707,13 +2711,16 @@ function App() {
   }, [paypalSandboxOrders]);
   const handleCreatePayPalSandboxOrder = async e => {
     e.preventDefault();
+    setPpApiError('');
     const amt = Math.max(0, parseFloat(ppOrderAmount) || 0);
     if (amt <= 0) {
+      setPpApiError('Invalid Amount: Enter a PayPal Sandbox order amount greater than zero.');
       pushToast('Invalid Amount', 'Enter a PayPal Sandbox order amount greater than zero.', 'warning');
       return;
     }
-    let orderId = `PAYPAL-SBX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
-    let approvalUrl = `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`;
+    let orderId = '';
+    let approvalUrl = '';
+    let isLiveVerified = false;
     try {
       const ppUrl = ['/api/v1', 'paypal/orders'].join('/');
       const resp = await fetch(ppUrl, {
@@ -2726,22 +2733,36 @@ function App() {
           wallet_id: 'wal-usd-paypal',
           amount: amt,
           currency: 'USD',
-          description: ppOrderDesc.trim() || 'PayPal Sandbox Order'
+          description: ppOrderDesc.trim() || 'PayPal Sandbox Order',
+          require_live_sandbox_api: ppRequireLiveApi
         })
       });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.order_id) orderId = data.order_id;
-        if (data.approval_url) approvalUrl = data.approval_url;
+      if (!resp.ok) {
+        const errPayload = await resp.json().catch(() => ({}));
+        throw new Error(errPayload.detail || `PayPal Sandbox endpoint returned HTTP ${resp.status}`);
       }
-    } catch {
-      // Continue with local PayPal Sandbox order record
+      const data = await resp.json();
+      if (ppRequireLiveApi && data.mode !== 'PAYPAL_SANDBOX_LIVE_API') {
+        throw new Error('Live PayPal Sandbox API credentials (PAYPAL_CLIENT_ID / PAYPAL_CLIENT_SECRET) are not configured on the backend server.');
+      }
+      orderId = data.order_id;
+      approvalUrl = data.approval_url;
+      isLiveVerified = data.mode === 'PAYPAL_SANDBOX_LIVE_API';
+    } catch (err) {
+      if (ppRequireLiveApi) {
+        const msg = `PayPal Sandbox API Verification Error: ${err?.message || 'Backend /api/v1/paypal/orders unreachable'}. Order was NOT created via local fallback. Switch to "SANDBOX EXPERIENCE (Simulated)" to test sample orders without credentials.`;
+        setPpApiError(msg);
+        pushToast('PayPal Sandbox API Error', msg, 'warning');
+        return;
+      }
+      orderId = `SAMPLE-PP-SBX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
+      approvalUrl = `https://www.sandbox.paypal.com/checkoutnow?token=${orderId}`;
     }
     const newOrder = {
       orderId,
       amount: +amt.toFixed(2),
       currency: 'USD',
-      description: ppOrderDesc.trim() || 'PayPal Sandbox Order',
+      description: `${ppOrderDesc.trim() || 'PayPal Sandbox Order'} [${isLiveVerified ? 'PAYPAL SANDBOX API' : 'SANDBOX EXPERIENCE'}]`,
       status: 'CREATED',
       approvalUrl,
       createdAt: new Date().toLocaleTimeString([], {
@@ -2750,9 +2771,10 @@ function App() {
       })
     };
     setPaypalSandboxOrders(prev => [newOrder, ...prev]);
-    pushToast('PayPal Sandbox Order Created (Pending)', `Order ${orderId} ($${amt.toFixed(2)} USD) created. Approve & Capture, Cancel, or Test Failure below.`, 'info');
+    pushToast(isLiveVerified ? 'PayPal Sandbox API Order Created' : 'Sandbox Experience Sample Order Created', `Order ${orderId} ($${amt.toFixed(2)} USD) is ready for Approval & Capture, Cancel, or Failure test.`, 'info');
   };
   const handleCapturePayPalSandboxOrder = async orderId => {
+    setPpApiError('');
     if (ppLockRef.current.has(orderId)) {
       pushToast('Duplicate Blocked', `Order ${orderId} is already being processed.`, 'warning');
       return;
@@ -2772,18 +2794,34 @@ function App() {
       ...o,
       status: 'PROCESSING'
     } : o));
-    let captureId = `CAP-SBX-${Math.random().toString(36).slice(2, 9).toUpperCase()}`;
+    let captureId = '';
     try {
-      const ppCapUrl = ['/api/v1/paypal/orders', orderId, 'capture'].join('/');
+      const ppCapUrl = ['/api/v1/paypal/orders', orderId, 'capture'].join('/') + `?require_live_sandbox_api=${ppRequireLiveApi ? 'true' : 'false'}`;
       const resp = await fetch(ppCapUrl, {
         method: 'POST'
       });
-      if (resp.ok) {
-        const data = await resp.json();
-        if (data.capture_id) captureId = data.capture_id;
+      if (!resp.ok) {
+        const errPayload = await resp.json().catch(() => ({}));
+        throw new Error(errPayload.detail || `HTTP ${resp.status}`);
       }
-    } catch {
-      // Continue with local capture
+      const data = await resp.json();
+      if (ppRequireLiveApi && data.mode !== 'PAYPAL_SANDBOX_LIVE_API') {
+        throw new Error('Live PayPal Sandbox API response not verified.');
+      }
+      captureId = data.capture_id;
+    } catch (err) {
+      if (ppRequireLiveApi) {
+        ppLockRef.current.delete(orderId);
+        setPaypalSandboxOrders(prev => prev.map(o => o.orderId === orderId ? {
+          ...o,
+          status: 'CREATED'
+        } : o));
+        const msg = `PayPal Sandbox Capture Failed: ${err?.message || 'Unable to verify capture with PayPal Sandbox API'}. Order ${orderId} was NOT marked completed via fallback.`;
+        setPpApiError(msg);
+        pushToast('PayPal Capture Error', msg, 'warning');
+        return;
+      }
+      captureId = `SAMPLE-CAP-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
     }
     setPaypalSandboxOrders(prev => prev.map(o => o.orderId === orderId ? {
       ...o,
@@ -2916,19 +2954,21 @@ function App() {
   };
 
   // -------------------------------------------------------------------------
-  // INTERNATIONAL GLOBAL PAY WORKFLOW (COUNTRY, CURRENCY, PROVIDER, RECIPIENT)
+  // INTERNATIONAL GLOBAL PAY WORKFLOW (14-STEP SANDBOX EXPERIENCE + ALL 9 PROVIDERS)
   // -------------------------------------------------------------------------
   const [intlCountry, setIntlCountry] = useState('US');
   const [intlCurrency, setIntlCurrency] = useState('USD');
-  const [intlProvider, setIntlProvider] = useState('ruvio_p2p');
+  const [intlProvider, setIntlProvider] = useState('paypal_sandbox');
   const [intlSourceWalletId, setIntlSourceWalletId] = useState('wal-usd-main');
   const [intlRecipientName, setIntlRecipientName] = useState('Elena Rostova');
   const [intlRecipientAccount, setIntlRecipientAccount] = useState('elena@ruvio.io');
   const [intlAmount, setIntlAmount] = useState('50.00');
-  const [intlNote, setIntlNote] = useState('International Settlement');
+  const [intlNote, setIntlNote] = useState('Global Cross-Border Settlement');
+  const [intlSimOutcome, setIntlSimOutcome] = useState('success');
+  const [intlIsProcessing, setIntlIsProcessing] = useState(false);
   const [intlSummaryOpen, setIntlSummaryOpen] = useState(false);
   const [intlError, setIntlError] = useState('');
-  const [intlLastStatus, setIntlLastStatus] = useState('');
+  const [intlLastStatus, setIntlLastStatus] = useState('SANDBOX EXPERIENCE Ready');
   const intlDedupRef = useRef('');
   const GLOBAL_COUNTRIES = [{
     code: 'US',
@@ -2962,66 +3002,110 @@ function App() {
     supported: true
   }, {
     code: 'JP',
-    name: 'Japan (Unsupported Corridor)',
+    name: 'Japan',
     defaultCurrency: 'JPY',
-    supported: false
+    supported: true
   }];
+  const ALL_SUPPORTED_CURRENCIES = ['USD', 'BDT', 'EUR', 'GBP', 'CAD', 'SGD', 'JPY'];
   const GLOBAL_PROVIDERS = [{
-    id: 'ruvio_p2p',
-    name: 'RUVIO Peer-to-Peer User Network',
-    status: 'ACTIVE',
-    currencies: ['USD', 'BDT', 'EUR', 'GBP', 'CAD', 'SGD'],
+    id: 'paypal_sandbox',
+    name: 'PayPal Sandbox',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'PAYPAL_SANDBOX_ORDERS_V2',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
     feePct: 0.0,
     fixedFee: 0.0,
-    detail: 'Atomic ledger transfer between registered RUVIO accounts (e.g., Zavier Nadeem → Elena Rostova).'
+    settlementSpeed: 'Instant Sandbox Order & Capture',
+    detail: 'SANDBOX EXPERIENCE: Interactive PayPal Sandbox checkout simulation & Orders v2 workflow. Simulated transactions update sample wallet balances and do not transfer real money.'
   }, {
-    id: 'ruvio_internal',
-    name: 'RUVIO Multi-Currency Wallet Bridge',
-    status: 'ACTIVE',
-    currencies: ['USD', 'BDT', 'EUR', 'GBP', 'CAD', 'SGD'],
+    id: 'bkash',
+    name: 'bKash',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'SIMULATED_SANDBOX_RAIL',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
     feePct: 0.5,
     fixedFee: 0.0,
-    detail: 'Instant conversion and settlement across your connected RUVIO currency vaults.'
+    settlementSpeed: 'Instant Simulated MFS Corridor',
+    detail: 'SANDBOX EXPERIENCE: Simulated bKash mobile financial settlement corridor. Updates sample wallet balances for demonstration only (not connected to live bKash rails).'
   }, {
-    id: 'paypal_sandbox',
-    name: 'PayPal Sandbox (Official Orders v2 API)',
-    status: 'ACTIVE',
-    currencies: ['USD', 'EUR', 'GBP', 'CAD', 'SGD'],
-    feePct: 0.0,
+    id: 'city_bank',
+    name: 'City Bank',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'SIMULATED_SANDBOX_RAIL',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 0.45,
     fixedFee: 0.0,
-    detail: 'Creates a PayPal Developer Sandbox order for approval and capture (supports USD, EUR, GBP, CAD, SGD).'
+    settlementSpeed: 'Instant Simulated Bank Corridor',
+    detail: 'SANDBOX EXPERIENCE: Simulated commercial treasury settlement for City Bank. Updates sample wallet balances for demonstration only (not connected to live bank rails).'
+  }, {
+    id: 'visa_mastercard',
+    name: 'Visa / Mastercard',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'SIMULATED_SANDBOX_RAIL',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 1.25,
+    fixedFee: 0.0,
+    settlementSpeed: 'Instant Simulated Card Network Rail',
+    detail: 'SANDBOX EXPERIENCE: Simulated card network payout preview. Updates sample wallet balances for demonstration only (not connected to live card acquiring networks).'
+  }, {
+    id: 'wise',
+    name: 'Wise',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'SIMULATED_SANDBOX_RAIL',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 0.6,
+    fixedFee: 0.0,
+    settlementSpeed: 'Instant Simulated Mid-Market FX Rail',
+    detail: 'SANDBOX EXPERIENCE: Simulated cross-border mid-market FX transfer. Updates sample wallet balances for demonstration only (not connected to live Wise API).'
   }, {
     id: 'google_pay',
     name: 'Google Pay',
-    status: 'SETUP_REQUIRED',
-    currencies: [],
-    feePct: 0,
-    fixedFee: 0,
-    detail: 'Unavailable for P2P bank payouts: Google Pay is a card/wallet payment presentation method requiring VITE_GOOGLE_PAY_MERCHANT_ID and an acquiring processor, not a universal international bank-transfer network.'
-  }, {
-    id: 'wise',
-    name: 'Wise Cross-Border API',
-    status: 'SETUP_REQUIRED',
-    currencies: [],
-    feePct: 0,
-    fixedFee: 0,
-    detail: 'Setup Required: Missing WISE_API_TOKEN and verified Wise Business profile credentials in backend environment.'
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'SIMULATED_SANDBOX_RAIL',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 0.8,
+    fixedFee: 0.0,
+    settlementSpeed: 'Instant Simulated Digital Wallet Rail',
+    detail: 'SANDBOX EXPERIENCE: Simulated Google Pay digital wallet settlement. Updates sample wallet balances for demonstration only (not connected to live Google Pay processor).'
   }, {
     id: 'stripe',
-    name: 'Stripe Connect Payouts',
-    status: 'SETUP_REQUIRED',
-    currencies: [],
-    feePct: 0,
-    fixedFee: 0,
-    detail: 'Setup Required: Missing STRIPE_SECRET_KEY and regional merchant payout eligibility.'
+    name: 'Stripe Connect',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'SIMULATED_SANDBOX_RAIL',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 1.0,
+    fixedFee: 0.0,
+    settlementSpeed: 'Instant Simulated Global Payout Rail',
+    detail: 'SANDBOX EXPERIENCE: Simulated Stripe Connect cross-border payout. Updates sample wallet balances for demonstration only (not connected to live Stripe API).'
   }, {
-    id: 'visa_mastercard',
-    name: 'Visa / Mastercard Networks',
-    status: 'UNAVAILABLE',
-    currencies: [],
-    feePct: 0,
-    fixedFee: 0,
-    detail: 'Unavailable: Visa and Mastercard are payment card networks requiring acquiring bank sponsorship, not direct consumer recipient payout APIs.'
+    id: 'ruvio_p2p',
+    name: 'RUVIO P2P',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'INTERNAL_SAMPLE_LEDGER',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 0.0,
+    fixedFee: 0.0,
+    settlementSpeed: 'Instant Atomic Sample Ledger',
+    detail: 'SANDBOX EXPERIENCE: Atomic peer-to-peer transfer between sample RUVIO user accounts (0% fee). Simulated transactions do not transfer real money.'
+  }, {
+    id: 'ruvio_internal',
+    name: 'RUVIO Multi-Currency Wallet Bridge',
+    status: 'SANDBOX EXPERIENCE',
+    internalConnection: 'INTERNAL_SAMPLE_LEDGER',
+    liveIntegrated: false,
+    currencies: ALL_SUPPORTED_CURRENCIES,
+    feePct: 0.35,
+    fixedFee: 0.0,
+    settlementSpeed: 'Instant Multi-Currency Vault Bridge',
+    detail: 'SANDBOX EXPERIENCE: Instant conversion and settlement across your sample RUVIO currency vaults. Simulated transactions do not transfer real money.'
   }];
   const selectedCountryMeta = GLOBAL_COUNTRIES.find(c => c.code === intlCountry) || GLOBAL_COUNTRIES[0];
   const selectedProviderMeta = GLOBAL_PROVIDERS.find(p => p.id === intlProvider) || GLOBAL_PROVIDERS[0];
@@ -3030,7 +3114,7 @@ function App() {
     const amt = Math.max(0, parseFloat(intlAmount) || 0);
     const fee = +(amt * (selectedProviderMeta.feePct / 100) + selectedProviderMeta.fixedFee).toFixed(2);
     const totalDebit = +(amt + fee).toFixed(2);
-    const validCurr = ['USD', 'EUR', 'BDT', 'GBP', 'CAD', 'SGD'].includes(intlCurrency);
+    const validCurr = ALL_SUPPORTED_CURRENCIES.includes(intlCurrency);
     const {
       converted,
       sampleRate
@@ -3048,20 +3132,11 @@ function App() {
     };
   }, [intlAmount, selectedProviderMeta, intlSourceWallet, intlCurrency]);
   const validateInternationalPayment = () => {
-    if (!selectedCountryMeta.supported) {
-      return `Unsupported Country: ${selectedCountryMeta.name} is not supported by configured payment routes.`;
-    }
-    if (!['USD', 'EUR', 'BDT', 'GBP', 'CAD', 'SGD'].includes(intlCurrency)) {
-      return `Unsupported Currency: ${intlCurrency} is not supported. Select USD, EUR, BDT, GBP, CAD, or SGD.`;
-    }
-    if (selectedProviderMeta.status !== 'ACTIVE') {
-      return `Provider Unavailable (${selectedProviderMeta.name}): ${selectedProviderMeta.detail}`;
-    }
-    if (!selectedProviderMeta.currencies.includes(intlCurrency)) {
-      return `Unsupported Currency for ${selectedProviderMeta.name}: ${intlCurrency} is not supported by ${selectedProviderMeta.name} (supported: ${selectedProviderMeta.currencies.join(', ')}).`;
+    if (!ALL_SUPPORTED_CURRENCIES.includes(intlCurrency)) {
+      return `Unsupported Currency: Please select USD, BDT, EUR, GBP, CAD, SGD, or JPY.`;
     }
     if (!intlRecipientName.trim() || !intlRecipientAccount.trim()) {
-      return 'Invalid Recipient: Please enter both Recipient Name and Recipient Email / Account ID.';
+      return 'Invalid Recipient: Please enter both Recipient Name and Recipient Account / Email / Phone.';
     }
     if (intlCalculation.amt <= 0 || Number.isNaN(intlCalculation.amt)) {
       return 'Invalid Amount: Payment amount must be greater than zero.';
@@ -3077,11 +3152,12 @@ function App() {
     if (err) {
       setIntlError(err);
       setIntlSummaryOpen(false);
-      setIntlLastStatus('Failed: ' + err);
+      setIntlLastStatus('Validation Alert: ' + err);
       return;
     }
     setIntlError('');
     setIntlSummaryOpen(true);
+    setIntlLastStatus('Awaiting Confirmation (SANDBOX EXPERIENCE)');
   };
   const handleConfirmInternationalPayment = async () => {
     const err = validateInternationalPayment();
@@ -3090,63 +3166,76 @@ function App() {
       setIntlSummaryOpen(false);
       return;
     }
-    const sig = `${intlProvider}:${intlSourceWallet.id}:${intlRecipientAccount}:${intlCalculation.amt}:${Math.floor(Date.now() / 3000)}`;
+    const sig = `${intlProvider}:${intlSourceWallet.id}:${intlRecipientAccount}:${intlCalculation.amt}:${intlSimOutcome}:${Math.floor(Date.now() / 3000)}`;
     if (intlDedupRef.current === sig) {
       setIntlError('Duplicate Transaction Blocked: This identical payment was just submitted.');
       pushToast('Duplicate Blocked', 'Duplicate international payment prevented.', 'warning');
       return;
     }
     intlDedupRef.current = sig;
-    setIntlLastStatus('Processing...');
+    setIntlIsProcessing(true);
+    setIntlLastStatus(`Processing via ${selectedProviderMeta.name} (SANDBOX EXPERIENCE)...`);
+    await new Promise(resolve => setTimeout(resolve, 450));
+    setIntlIsProcessing(false);
+
+    // Clearly labelled sample reference ID (never fabricates real external provider transaction IDs)
+    const sampleRefCode = `SAMPLE-SBX-${Math.floor(100000 + Math.random() * 900000)}`;
+    const {
+      converted: usdEq
+    } = convertSampleCurrency(intlCalculation.amt, intlSourceWallet.currency, 'USD');
+
+    // Handle Simulated Failed Transaction Outcome
+    if (intlSimOutcome === 'failed') {
+      const failedTx = {
+        id: `tx-gp-fail-${Date.now()}`,
+        reference: sampleRefCode,
+        title: `[SANDBOX EXPERIENCE] ${selectedProviderMeta.name} → ${intlRecipientName} (Simulated Failure)`,
+        counterparty: `${intlRecipientName} (${intlRecipientAccount})`,
+        senderWallet: intlSourceWallet.name,
+        receiverWallet: `${intlRecipientName} (${intlCurrency})`,
+        transferModeLabel: 'SANDBOX EXPERIENCE',
+        recipientAmount: 0,
+        recipientCurrency: intlCurrency,
+        category: `${selectedProviderMeta.name} (Sandbox Experience)`,
+        provider: intlSourceWallet.name,
+        providerType: intlSourceWallet.providerType,
+        direction: 'outgoing',
+        amount: intlCalculation.amt,
+        currency: intlSourceWallet.currency,
+        usdEquivalent: +usdEq.toFixed(2),
+        fee: 0,
+        sampleRateUsed: `1 ${intlSourceWallet.currency} = ${intlCalculation.rate.toFixed(4)} ${intlCurrency}`,
+        status: 'Failed',
+        date: '2026-11-12',
+        timestamp: new Date().toLocaleString(),
+        notes: `SANDBOX EXPERIENCE — Simulated failed transaction via ${selectedProviderMeta.name} to ${selectedCountryMeta.name}. Zero sample funds were deducted and no real money was transferred.`
+      };
+      setTransactions(prev => [failedTx, ...prev]);
+      setIntlSummaryOpen(false);
+      setIntlLastStatus(`Simulated Failure Recorded (${sampleRefCode}) — Zero Balance Deducted`);
+      setReceiptModalTx(failedTx);
+      pushToast('Simulated Payment Failed (Sandbox Experience)', `${sampleRefCode}: Simulated failure tested on ${selectedProviderMeta.name}. Wallet balance unchanged.`, 'warning');
+      return;
+    }
+
+    // Handle Successful Simulated Transaction Across All 9 Providers
     if (intlProvider === 'paypal_sandbox') {
-      // Route through PayPal Sandbox Order Creation -> Approval
-      const newOrderId = `PAYPAL-SBX-${Math.random().toString(36).slice(2, 8).toUpperCase()}`;
       const newOrd = {
-        orderId: newOrderId,
+        orderId: sampleRefCode,
         amount: intlCalculation.recipientGets,
         currency: intlCurrency,
-        description: `Global Pay to ${intlRecipientName} (${selectedCountryMeta.name})`,
-        status: 'CREATED',
-        approvalUrl: `https://www.sandbox.paypal.com/checkoutnow?token=${newOrderId}`,
+        description: `Global Pay to ${intlRecipientName} (${selectedCountryMeta.name}) [SANDBOX EXPERIENCE]`,
+        status: 'COMPLETED',
+        captureId: `SAMPLE-CAP-${Math.random().toString(36).slice(2, 7).toUpperCase()}`,
+        approvalUrl: `https://www.sandbox.paypal.com/checkoutnow?token=${sampleRefCode}`,
         createdAt: new Date().toLocaleTimeString([], {
           hour: '2-digit',
           minute: '2-digit'
         })
       };
       setPaypalSandboxOrders(prev => [newOrd, ...prev]);
-      setIntlSummaryOpen(false);
-      setIntlLastStatus(`Pending: PayPal Sandbox Order ${newOrderId} created — click Approve & Capture below.`);
-      pushToast('PayPal Sandbox Order Created', `Order ${newOrderId} is Pending approval in the PayPal Sandbox panel below.`, 'info');
-      return;
     }
-
-    // RUVIO P2P or RUVIO Internal Multi-Currency Bridge execution
-    let refCode = `RUV-GP-${Math.floor(100000 + Math.random() * 900000)}`;
     if (intlProvider === 'ruvio_p2p') {
-      try {
-        const p2pUrl = ['/api/v1', 'transfers/p2p'].join('/');
-        const resp = await fetch(p2pUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            sender_user_id: authSession.userId || 'user_a_zavier',
-            sender_wallet_id: intlSourceWallet.id,
-            recipient_user_id: intlRecipientAccount.trim(),
-            recipient_wallet_id: 'wal-usd-main',
-            amount: intlCalculation.amt,
-            description: intlNote || `Global Pay to ${intlRecipientName}`,
-            idempotency_key: `gp-p2p-${Date.now()}`
-          })
-        });
-        if (resp.ok) {
-          const data = await resp.json();
-          if (data.reference) refCode = data.reference;
-        }
-      } catch {
-        // Fallback to local atomic ledger update
-      }
       const {
         converted: usdCredited
       } = convertSampleCurrency(intlCalculation.amt, intlSourceWallet.currency, 'USD');
@@ -3157,20 +3246,17 @@ function App() {
       balance: Math.max(0, +(w.balance - intlCalculation.totalDebit).toFixed(2)),
       availableBalance: Math.max(0, +(w.availableBalance - intlCalculation.totalDebit).toFixed(2))
     } : w));
-    const {
-      converted: usdEq
-    } = convertSampleCurrency(intlCalculation.amt, intlSourceWallet.currency, 'USD');
     const newTx = {
       id: `tx-gp-${Date.now()}`,
-      reference: refCode,
-      title: `Global Pay (${selectedCountryMeta.name}) → ${intlRecipientName}`,
+      reference: sampleRefCode,
+      title: `${selectedProviderMeta.name} (${selectedCountryMeta.name}) → ${intlRecipientName}`,
       counterparty: `${intlRecipientName} (${intlRecipientAccount})`,
       senderWallet: intlSourceWallet.name,
       receiverWallet: `${intlRecipientName} (${intlCurrency})`,
-      transferModeLabel: 'DEMO TRANSACTION',
+      transferModeLabel: 'SANDBOX EXPERIENCE',
       recipientAmount: intlCalculation.recipientGets,
       recipientCurrency: intlCurrency,
-      category: selectedProviderMeta.name,
+      category: `${selectedProviderMeta.name} (Sandbox Experience)`,
       provider: intlSourceWallet.name,
       providerType: intlSourceWallet.providerType,
       direction: 'outgoing',
@@ -3182,13 +3268,14 @@ function App() {
       status: 'Completed',
       date: '2026-11-12',
       timestamp: new Date().toLocaleString(),
-      notes: `${intlNote} via ${selectedProviderMeta.name} to ${selectedCountryMeta.name}`
+      notes: `SANDBOX EXPERIENCE — Simulated payment via ${selectedProviderMeta.name} to ${selectedCountryMeta.name} (${intlNote}). Sample wallet balance updated; simulated transactions do not transfer real money.`
     };
     setTransactions(prev => [newTx, ...prev]);
     setIntlSummaryOpen(false);
-    setIntlLastStatus(`Completed (${refCode})`);
+    setIntlLastStatus(`Completed in SANDBOX EXPERIENCE (${sampleRefCode})`);
     setReceiptModalTx(newTx);
-    pushToast('Global Payment Completed', `${refCode}: Sent ${formatMoney(intlCalculation.amt, intlSourceWallet.currency)} (${formatMoney(intlCalculation.recipientGets, intlCurrency)}) to ${intlRecipientName}.`, 'success');
+    pushNotification(`Sandbox Experience Payment (${sampleRefCode})`, `Simulated ${formatMoney(intlCalculation.amt, intlSourceWallet.currency)} via ${selectedProviderMeta.name} to ${intlRecipientName} (${formatMoney(intlCalculation.recipientGets, intlCurrency)}). Does not transfer real money.`, 'transfer');
+    pushToast('Sandbox Experience Payment Completed', `${sampleRefCode}: Simulated ${formatMoney(intlCalculation.amt, intlSourceWallet.currency)} (${formatMoney(intlCalculation.recipientGets, intlCurrency)}) via ${selectedProviderMeta.name}.`, 'success');
   };
 
   // -------------------------------------------------------------------------
@@ -6527,10 +6614,50 @@ Would you like me to:
     },
     className: "w-full px-3 py-2.5 rounded-xl bg-[#090516] border border-purple-500/30 font-extrabold text-white outline-none"
   }))), /*#__PURE__*/React.createElement("div", {
-    className: `p-3.5 rounded-2xl border text-xs ${selectedProviderMeta.status === 'ACTIVE' ? 'bg-emerald-500/15 border-emerald-400/35 text-emerald-300' : 'bg-amber-500/15 border-amber-400/40 text-amber-200'}`
+    className: "space-y-2.5"
+  }, /*#__PURE__*/React.createElement("div", {
+    className: "flex flex-wrap items-center justify-between gap-2"
+  }, /*#__PURE__*/React.createElement("span", {
+    className: "font-bold text-purple-200"
+  }, "Interactive Provider Selection (All 9 Providers Selectable in SANDBOX EXPERIENCE):"), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1.5 bg-[#090516] p-1 rounded-xl border border-purple-500/30"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setIntlSimOutcome('success'),
+    className: `px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-all ${intlSimOutcome === 'success' ? 'bg-emerald-500 text-slate-950' : 'text-purple-200 hover:text-white'}`
+  }, "Simulate Success"), /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => setIntlSimOutcome('failed'),
+    className: `px-2.5 py-1 rounded-lg text-[11px] font-extrabold transition-all ${intlSimOutcome === 'failed' ? 'bg-rose-500 text-white' : 'text-purple-200 hover:text-white'}`
+  }, "Simulate Failed Transaction"))), /*#__PURE__*/React.createElement("div", {
+    className: "grid grid-cols-2 sm:grid-cols-3 gap-2"
+  }, GLOBAL_PROVIDERS.map(p => {
+    const active = intlProvider === p.id;
+    return /*#__PURE__*/React.createElement("button", {
+      key: p.id,
+      type: "button",
+      onClick: () => {
+        setIntlProvider(p.id);
+        setIntlSummaryOpen(false);
+        setIntlError('');
+      },
+      className: `p-2.5 rounded-xl border text-left transition-all ${active ? 'ruvio-on-dark border-purple-300 shadow-md' : 'bg-[#090516] border-purple-500/25 hover:border-purple-400/50'}`
+    }, /*#__PURE__*/React.createElement("div", {
+      className: "flex items-center justify-between gap-1"
+    }, /*#__PURE__*/React.createElement("span", {
+      className: "font-extrabold text-[11px] text-white truncate"
+    }, p.name), /*#__PURE__*/React.createElement("span", {
+      className: "text-[9px] font-black px-1.5 py-0.5 rounded bg-black/30 text-emerald-300 shrink-0"
+    }, p.feePct, "% Fee")), /*#__PURE__*/React.createElement("span", {
+      className: "block text-[9px] font-bold uppercase tracking-wider text-purple-200 mt-0.5"
+    }, p.status));
+  }))), /*#__PURE__*/React.createElement("div", {
+    className: "p-3.5 rounded-2xl border bg-emerald-500/15 border-emerald-400/35 text-emerald-300 text-xs"
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-between gap-2 font-extrabold"
-  }, /*#__PURE__*/React.createElement("span", null, "Provider: ", selectedProviderMeta.name), /*#__PURE__*/React.createElement("span", null, selectedProviderMeta.status)), /*#__PURE__*/React.createElement("p", {
+  }, /*#__PURE__*/React.createElement("span", null, "Provider: ", selectedProviderMeta.name), /*#__PURE__*/React.createElement("span", {
+    className: "px-2 py-0.5 rounded-full text-[10px] bg-black/30 border border-emerald-400/40"
+  }, selectedProviderMeta.status)), /*#__PURE__*/React.createElement("p", {
     className: "mt-1"
   }, selectedProviderMeta.detail)), intlError && /*#__PURE__*/React.createElement("div", {
     className: "p-3.5 rounded-2xl bg-rose-500/20 border border-rose-400/50 text-xs font-bold text-rose-200"
@@ -6564,15 +6691,18 @@ Would you like me to:
     className: "text-white"
   }, formatMoney(intlCalculation.totalDebit, intlSourceWallet.currency))), /*#__PURE__*/React.createElement("div", {
     className: "flex justify-between font-extrabold text-emerald-400"
-  }, /*#__PURE__*/React.createElement("span", null, "Recipient Receives:"), /*#__PURE__*/React.createElement("span", null, intlCalculation.rate > 0 ? `${intlCurrency} ${intlCalculation.recipientGets.toFixed(2)}` : '—'))), !intlSummaryOpen ? /*#__PURE__*/React.createElement("button", {
+  }, /*#__PURE__*/React.createElement("span", null, "Recipient Receives:"), /*#__PURE__*/React.createElement("span", null, intlCalculation.rate > 0 ? `${intlCurrency} ${intlCalculation.recipientGets.toFixed(2)}` : '—'))), /*#__PURE__*/React.createElement("div", {
+    className: "p-2.5 rounded-xl bg-purple-950/60 border border-purple-400/30 text-[11px] text-purple-200 leading-relaxed"
+  }, /*#__PURE__*/React.createElement("strong", null, "SANDBOX EXPERIENCE DISCLOSURE:"), " Simulated transactions update sample wallet balances for demonstration and ", /*#__PURE__*/React.createElement("strong", null, "do not transfer real money"), "."), !intlSummaryOpen ? /*#__PURE__*/React.createElement("button", {
     type: "submit",
     className: "w-full py-3 rounded-xl font-extrabold uppercase ruvio-on-dark bg-gradient-to-r from-[#7C3AED] via-[#A855F7] to-[#EC4899] text-white shadow-lg"
   }, "Review International Payment") : /*#__PURE__*/React.createElement("div", {
     className: "space-y-2"
   }, /*#__PURE__*/React.createElement("button", {
     type: "button",
+    disabled: intlIsProcessing,
     onClick: handleConfirmInternationalPayment,
-    className: "w-full py-3 rounded-xl font-extrabold uppercase bg-emerald-500 text-slate-950 shadow-lg"
+    className: "w-full py-3 rounded-xl font-extrabold uppercase bg-emerald-500 text-slate-950 shadow-lg disabled:opacity-50"
   }, "Confirm & Execute Payment"), /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => {
@@ -6808,9 +6938,18 @@ Would you like me to:
     className: "text-base font-extrabold text-white"
   }, "PayPal Sandbox Checkout (Orders v2 API)"), /*#__PURE__*/React.createElement("p", {
     className: "text-xs text-purple-300 ruvio-text-secondary"
-  }, "Separate PayPal Developer Sandbox order creation, approval, and payment capture workflow")), /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full bg-blue-500/20 text-blue-300 border border-blue-400/35"
-  }, "PayPal Sandbox")), /*#__PURE__*/React.createElement("form", {
+  }, "Separate PayPal Developer Sandbox order creation, approval, and payment capture workflow")), /*#__PURE__*/React.createElement("div", {
+    className: "flex items-center gap-1.5"
+  }, /*#__PURE__*/React.createElement("button", {
+    type: "button",
+    onClick: () => {
+      setPpRequireLiveApi(prev => !prev);
+      setPpApiError('');
+    },
+    className: `text-[10px] font-extrabold uppercase px-2.5 py-1 rounded-full border transition-all ${ppRequireLiveApi ? 'bg-amber-500/20 text-amber-200 border-amber-400/50' : 'bg-blue-500/20 text-blue-300 border-blue-400/35'}`
+  }, ppRequireLiveApi ? 'Mode: Verify Live PayPal Sandbox API' : 'Mode: SANDBOX EXPERIENCE'))), ppApiError && /*#__PURE__*/React.createElement("div", {
+    className: "p-3 rounded-xl bg-rose-500/20 border border-rose-400/50 text-xs font-bold text-rose-200"
+  }, ppApiError), /*#__PURE__*/React.createElement("form", {
     onSubmit: handleCreatePayPalSandboxOrder,
     className: "grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs items-end"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("label", {
@@ -7289,8 +7428,8 @@ Would you like me to:
   }, /*#__PURE__*/React.createElement("div", {
     className: "flex items-center justify-between border-b border-purple-500/20 pb-3"
   }, /*#__PURE__*/React.createElement("div", null, /*#__PURE__*/React.createElement("span", {
-    className: "text-[10px] font-extrabold uppercase text-purple-300 block"
-  }, "Transaction Receipt"), /*#__PURE__*/React.createElement("h3", {
+    className: "text-[10px] font-extrabold uppercase text-emerald-300 block"
+  }, "SANDBOX EXPERIENCE \u2014 SAMPLE RECEIPT"), /*#__PURE__*/React.createElement("h3", {
     className: "text-sm font-extrabold"
   }, receiptModalTx.title)), /*#__PURE__*/React.createElement("button", {
     type: "button",
@@ -7338,7 +7477,9 @@ Would you like me to:
     className: "text-purple-300"
   }, "Status:"), /*#__PURE__*/React.createElement("span", {
     className: "font-bold text-emerald-400"
-  }, receiptModalTx.status.replace(' (Demo)', '')))), /*#__PURE__*/React.createElement("button", {
+  }, receiptModalTx.status.replace(' (Demo)', '')))), /*#__PURE__*/React.createElement("div", {
+    className: "p-3 rounded-xl bg-purple-950/60 border border-purple-400/30 text-[11px] text-purple-200 leading-relaxed"
+  }, /*#__PURE__*/React.createElement("strong", null, "SANDBOX EXPERIENCE NOTICE:"), " This sample receipt reflects a simulated transaction in the RUVIO AI Sandbox Experience and ", /*#__PURE__*/React.createElement("strong", null, "does not transfer real money"), " or represent a live external bank/provider confirmation."), /*#__PURE__*/React.createElement("button", {
     type: "button",
     onClick: () => setReceiptModalTx(null),
     className: "w-full py-2.5 rounded-xl text-xs font-extrabold ruvio-on-dark bg-gradient-to-r from-[#7C3AED] to-[#EC4899] text-white"
